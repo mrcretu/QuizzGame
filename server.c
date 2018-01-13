@@ -12,14 +12,37 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <sqlite3.h>
+#include <stdbool.h>
 
 #define MAX_BUFFER 1024
+
+sqlite3 *db;
+sqlite3_stmt *res; 
+
+char username[MAX_BUFFER],password[MAX_BUFFER];
+int utilizator_id;
 
 /*
 Queue implementation using a char array.
 Contains a mutex for functions to lock on before modifying the array,
 and condition variables for when it's not empty or full.
 */
+typedef struct{
+    char Name[MAX_BUFFER];
+    char Surname[MAX_BUFFER];
+    char username[MAX_BUFFER];
+    char password[MAX_BUFFER];
+    int clientSocketFd;
+}register_info;
+
+typedef struct {
+    char username[MAX_BUFFER];
+    char password[MAX_BUFFER];
+    int clientSocketFd;
+    pthread_mutex_t *login_mutex;
+}login_info;
+
 typedef struct {
     char *buffer[MAX_BUFFER];
     int head, tail;
@@ -51,11 +74,16 @@ typedef struct {
     int clientSocketFd;
 } clientHandlerVars;
 
+bool create_account(char *surname,char *name,char *account,char *password);
+bool verrify_account(char *username,char*password);
+bool initialize_database();
 void startChat(int socketFd);
 void buildMessage(char *result, char *name, char *msg);
 void bindSocket(struct sockaddr_in *serverAddr, int socketFd, long port);
 void removeClient(chatDataVars *data, int clientSocketFd);
 
+void *client_register(void *regInfo);
+void *client_login(void* logInfo);
 void *newClientHandler(void *data);
 void *clientHandler(void *chv);
 void *messageHandler(void *data);
@@ -71,6 +99,8 @@ int main(int argc, char *argv[])
     long port = 9999;
     int socketFd;
 
+    while(initialize_database()==0);
+
     if(argc == 2) port = strtol(argv[1], NULL, 0);
 
     if((socketFd = socket(AF_INET, SOCK_STREAM, 0))== -1)
@@ -80,6 +110,7 @@ int main(int argc, char *argv[])
     }
 
     bindSocket(&serverAddr, socketFd, port);
+
     if(listen(socketFd, 1) == -1)
     {
         perror("listen failed: ");
@@ -114,20 +145,20 @@ void startChat(int socketFd)
 
     //Start thread to handle messages received
 
-    pthread_t messagesThread;   /* threads ID's */
+    //pthread_t messagesThread;   /* threads ID's */
 
-    if((pthread_create(&messagesThread, NULL, (void *)&messageHandler, (void *)&data)) == 0)
-    {
-        fprintf(stderr, "Message handler started\n");
-    }
+    //if((pthread_create(&messagesThread, NULL, (void *)&messageHandler, (void *)&data)) == 0)
+    //{
+    //    fprintf(stderr, "Message handler started\n");
+    //}
 
 
     /* pthread_join || Wait until thread is done its work */
 
     pthread_join(connectionThread, NULL);
-    pthread_join(messagesThread, NULL);
+    //pthread_join(messagesThread, NULL);
 
-    queueDestroy(data.queue);
+    //queueDestroy(data.queue);
     pthread_mutex_destroy(data.clientListMutex);
     free(data.clientListMutex);
 }
@@ -227,6 +258,7 @@ void bindSocket(struct sockaddr_in *serverAddr, int socketFd, long port)
 //Removes the socket from the list of active client sockets and closes it
 void removeClient(chatDataVars *data, int clientSocketFd)
 {
+    fprintf(stderr, "Client removed from the list\n");
     pthread_mutex_lock(data->clientListMutex);
     for(int i = 0; i < MAX_BUFFER; i++)
     {
@@ -293,7 +325,7 @@ void *clientHandler(void *chv)
     clientHandlerVars *vars = (clientHandlerVars *)chv;
     chatDataVars *data = (chatDataVars *)vars->data;
 
-    queue *q = data->queue;
+    //queue *q = data->queue;
     int clientSocketFd = vars->clientSocketFd;
 
     char msgBuffer[MAX_BUFFER];
@@ -301,6 +333,7 @@ void *clientHandler(void *chv)
     {
         int numBytesRead = read(clientSocketFd, msgBuffer, MAX_BUFFER - 1);
         msgBuffer[numBytesRead] = '\0';
+        fprintf(stderr, "%s\n", msgBuffer);
 
         //If the client sent /exit\n, remove them from the client list and close their socket
         if(strcmp(msgBuffer, "/exit\n") == 0)
@@ -309,7 +342,40 @@ void *clientHandler(void *chv)
             removeClient(data, clientSocketFd);
             return NULL;
         }
-        else
+
+        if(strcmp(msgBuffer, "/login\n") == 0)
+        {
+            fprintf(stderr, "[server] A client typed /login.\n");
+
+            login_info logInfo;
+            logInfo.clientSocketFd = clientSocketFd;
+
+
+            pthread_t loginThread;
+            memset(msgBuffer, 0, MAX_BUFFER);
+            if((pthread_create(&loginThread, NULL, (void *)&client_login, (void *)&logInfo)) == 0)
+            {
+                fprintf(stderr, "Client is trying to login. Socket: %d\n", clientSocketFd);
+            }
+            pthread_join(loginThread, NULL);
+        }
+
+        if(strcmp(msgBuffer, "/register\n") == 0)
+        {
+            fprintf(stderr, "[server] A client typed /register.\n");
+
+            register_info regInfo;
+            regInfo.clientSocketFd = clientSocketFd;
+
+
+            pthread_t registerThread;
+            if((pthread_create(&registerThread, NULL, (void *)&client_register, (void *)&regInfo)) == 0)
+            {
+                fprintf(stderr, "Client is trying to register. Socket: %d\n", clientSocketFd);
+            }
+            pthread_join(registerThread, NULL);
+        }
+        /*else
         {
             //Wait for queue to not be full before pushing message
             while(q->full)
@@ -323,10 +389,111 @@ void *clientHandler(void *chv)
             queuePush(q, msgBuffer);
             pthread_mutex_unlock(q->mutex);
             pthread_cond_signal(q->notEmpty);
-        }
+        }*/
     }
 }
+void *client_register(void *regInfo)
+{
+    register_info *ri = (register_info *)regInfo;
+    char msgBuffer[MAX_BUFFER];
+    int count = 4;
+    fprintf(stderr, "Client entered register function.\n");
 
+    int socket = ri->clientSocketFd;
+    if(socket != 0 && write(socket, "Name: \n", MAX_BUFFER - 1) == -1)
+        perror("Socket write failed: ");
+    if(socket != 0 && write(socket, "Surname: \n", MAX_BUFFER - 1) == -1)
+        perror("Socket write failed: ");
+    if(socket != 0 && write(socket, "username: \n", MAX_BUFFER - 1) == -1)
+        perror("Socket write failed: ");
+    if(socket != 0 && write(socket, "password: \n", MAX_BUFFER - 1) == -1)
+        perror("Socket write failed: ");
+
+    while(count>0){
+
+        int numBytesRead = read(ri->clientSocketFd, msgBuffer, MAX_BUFFER - 1);
+            msgBuffer[numBytesRead] = '\0';
+        fprintf(stderr, "%s*\n", msgBuffer);
+
+        if(count == 4) {
+            strcpy(ri->Name, msgBuffer);
+        //printf("\n%s\n",li->username );
+        }
+        if(count == 3) {
+            strcpy(ri->Surname, msgBuffer);
+            //printf("\n%s\n",li->password );
+        }
+        if(count == 2) {
+            strcpy(ri->username, msgBuffer);
+        //printf("\n%s\n",li->username );
+        }
+        if(count == 1) {
+            strcpy(ri->password, msgBuffer);
+            //printf("\n%s\n",li->password );
+        }
+            count--;
+    }
+    memset(msgBuffer, 0, MAX_BUFFER);
+
+    ri->Name[strlen(ri->Name)-1]='\0';
+    ri->Surname[strlen(ri->Surname)-1]='\0';
+    ri->username[strlen(ri->username)-1]='\0';
+    ri->password[strlen(ri->password)-1]='\0';
+
+    fprintf(stderr,"%d\n",create_account(ri->Name,ri->Surname,ri->username,ri->password));
+    pthread_exit(0);
+}
+
+void *client_login(void *logInfo)
+{
+    login_info *li = (login_info *)logInfo;
+    char msgBuffer[MAX_BUFFER];
+    int count = 3;
+
+    //memset(username, 0, MAX_BUFFER); memset(password, 0, MAX_BUFFER);
+    fprintf(stderr, "Client entered login function.\n");
+
+    //pthread_mutex_lock(li->login_mutex);
+    int socket = li->clientSocketFd;
+    if(socket != 0 && write(socket, "username: \n", MAX_BUFFER - 1) == -1)
+        perror("Socket write failed: ");
+    if(socket != 0 && write(socket, "password: \n", MAX_BUFFER - 1) == -1)
+        perror("Socket write failed: ");
+    fflush(stdin);
+    while(count>0){
+        msgBuffer[0] = '\0';
+        int numBytesRead = read(li->clientSocketFd, msgBuffer, MAX_BUFFER - 1);
+            msgBuffer[numBytesRead] = '\0';
+        //fprintf(stderr, "%s\n", msgBuffer);
+
+        if(count == 2) {
+            strcpy(li->username, msgBuffer);
+        //printf("\n%s\n",li->username );
+        }
+        if(count == 1) {
+            strcpy(li->password, msgBuffer);
+            //printf("\n%s\n",li->password );
+        }
+            fprintf(stderr, "%s\n",li->username);
+            fprintf(stderr, "%s\n",li->password);
+            count--;
+    }
+    li->username[strlen(li->username)-1]='\0';
+    li->password[strlen(li->password)-1]='\0';
+
+    if(verrify_account(li->username,li->password) == 1) 
+    {
+        if(socket != 0 && write(socket, "Login successfull!\n", MAX_BUFFER - 1) == -1)
+        perror("Socket write failed: ");
+        fprintf(stderr, "%d\n", utilizator_id);
+    }
+    else
+    {
+        if(socket != 0 && write(socket, "Login not successfull!\n", MAX_BUFFER - 1) == -1) perror("Socket write failed: ");
+        pthread_exit(0);
+    }
+    //pthread_mutex_unlock(li->login_mutex);
+}
 //The "consumer" -- waits for the queue to have messages then takes them out and broadcasts to clients
 void *messageHandler(void *data)
 {
@@ -355,4 +522,68 @@ void *messageHandler(void *data)
                 perror("Socket write failed: ");
         }
     }
+}
+
+bool initialize_database()
+{
+    int rc = sqlite3_open("base.db3", &db);
+    if (rc != SQLITE_OK) 
+    {
+        
+        fprintf(stderr, "Cannot open database: %s\n", sqlite3_errmsg(db));
+        sqlite3_close(db);
+        return 0;
+    }
+    else fprintf(stderr, "Database successfully opened!\n");
+return 1;
+} 
+
+bool verrify_account(char *username,char*password)
+{
+  fprintf(stderr, "%s*%s\n",username,password );
+  int rc,step;
+  char *sql="SELECT ID, USERNAME, PASSWORD FROM CLIENTS WHERE USERNAME = ? AND PASSWORD = ?";
+  rc = sqlite3_prepare_v2(db, sql, -1, &res, 0);
+  if (rc == SQLITE_OK) 
+  {
+        sqlite3_bind_text(res, 1, username,strlen(username),0);
+        sqlite3_bind_text(res, 2, password,strlen(password),0);
+  }
+  
+  while((step = sqlite3_step(res))!=SQLITE_DONE)
+    {
+       if(step == SQLITE_ROW) 
+        {    
+          utilizator_id = (*sqlite3_column_text(res,0)) - '0';
+           return 1;   
+        }
+    }
+    sqlite3_finalize(res);
+    //sqlite3_close(db);
+return 0;
+}
+bool create_account(char *surname,char *name,char *account,char *password)
+{
+    fprintf(stderr, "*%s*%s*%s*%s*\n",surname,name,account,password);
+
+    int step;
+    char *sql = "INSERT INTO CLIENTS(NUME,PRENUME,USERNAME,PASSWORD) VALUES (?,?,?,?)"; 
+    int rc = sqlite3_prepare_v2(db, sql, -1, &res, 0);
+    if (rc != SQLITE_OK) 
+    {
+        fprintf(stderr, "Failed to execute statement: %s\n", sqlite3_errmsg(db));
+    }
+    if (rc == SQLITE_OK) 
+    {
+    sqlite3_bind_text(res, 4, password,strlen(password),0);
+    sqlite3_bind_text(res, 1, surname,strlen(surname),0);
+    sqlite3_bind_text(res, 2, name,strlen(name),0);
+    sqlite3_bind_text(res, 3, account,strlen(account),0);
+    }
+     while((step = sqlite3_step(res))==SQLITE_DONE)
+     {
+       fprintf(stderr, "Contul %s a fost creat cu succes!",account);
+       return 1;
+     }
+     return 0;
 }

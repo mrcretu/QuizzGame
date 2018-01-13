@@ -19,7 +19,9 @@ void chatloop(char *name, int socketFd);
 void buildMessage(char *result, char *name, char *msg);
 void setupAndConnect(struct sockaddr_in *serverAddr, struct hostent *host, int socketFd, long port);
 void setNonBlock(int fd);
-void interruptHandler(int sig);
+void exit_interruptHandler(int sig);
+void login_option();
+void register_option();
 
 static int socketFd;
 
@@ -53,7 +55,7 @@ int main(int argc, char *argv[])
     setNonBlock(0);
 
     //Set a handler for the interrupt signal
-    signal(SIGINT, interruptHandler);
+    signal(SIGINT, exit_interruptHandler);
 
     chatloop(name, socketFd);
 }
@@ -64,6 +66,11 @@ void chatloop(char *name, int socketFd)
     fd_set clientFds;
     char chatMsg[MAX_BUFFER];
     char chatBuffer[MAX_BUFFER], msgBuffer[MAX_BUFFER];
+
+    /* startup menu options */
+    fprintf(stderr,"============\n");
+    fprintf(stderr,"1. /login\n2. /register\n3. /exit\n");
+    fprintf(stderr,"============\n");
 
     while(1)
     {
@@ -88,7 +95,13 @@ void chatloop(char *name, int socketFd)
                     {
                         fgets(chatBuffer, MAX_BUFFER - 1, stdin);
                         if(strcmp(chatBuffer, "/exit\n") == 0)
-                            interruptHandler(-1); //Reuse the interruptHandler function to disconnect the client
+                            exit_interruptHandler(-1); //Reuse the interruptHandler function to disconnect the client
+                        
+                        if(strcmp(chatBuffer, "/login\n") == 0)
+                            login_option();
+
+                         if(strcmp(chatBuffer, "/register\n") == 0)
+                            register_option(); 
                         else
                         {
                             buildMessage(chatMsg, name, chatBuffer);
@@ -107,8 +120,8 @@ void chatloop(char *name, int socketFd)
 void buildMessage(char *result, char *name, char *msg)
 {
     memset(result, 0, MAX_BUFFER);
-    strcpy(result, name);
-    strcat(result, ": ");
+    //strcpy(result, name);
+    //strcat(result, ": ");
     strcat(result, msg);
 }
 
@@ -138,11 +151,23 @@ void setNonBlock(int fd)
 }
 
 //Notify the server when the client exits by sending "/exit"
-void interruptHandler(int sig_unused)
+void exit_interruptHandler(int sig_unused)
 {
     if(write(socketFd, "/exit\n", MAX_BUFFER - 1) == -1)
         perror("write failed: ");
 
     close(socketFd);
     exit(1);
+}
+void login_option()
+{
+    if(write(socketFd, "/login\n", MAX_BUFFER - 1) == -1)
+        perror("write failed: ");
+    //exit(1);
+}
+
+void register_option() 
+{
+    if(write(socketFd, "/register\n", MAX_BUFFER - 1) == -1)
+        perror("write failed: ");
 }
