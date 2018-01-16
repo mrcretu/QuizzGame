@@ -17,20 +17,45 @@
 
 
 #define MAX_BUFFER 1024
+#define MIN_BUFFER 512
+char intrebare[MAX_BUFFER];
+char respons[MAX_BUFFER];
+
+char correct[MIN_BUFFER] = "\t\t\t\tCorrect!\n";
+char incorrect[MIN_BUFFER] = "\t\t\t\tIncorrect!\n";
+
+int score;
+
+
 
 sqlite3 *db;
 sqlite3_stmt *res; 
+
 int utilizator_id=20;
 
 typedef struct{
-    const char *Question[MAX_BUFFER];
-    const char *answ_1[MAX_BUFFER];
-    const char *answ_2[MAX_BUFFER];
-    const char *answ_3[MAX_BUFFER];
-    //char answ_4[MAX_BUFFER];
-    const char *correct_answ[MAX_BUFFER];
     int clientSocketFd;
-}h_questions;
+    int id;
+    char question[MAX_BUFFER];
+    char answer[MAX_BUFFER];
+}last;
+
+typedef struct{
+    int clientSocketFd;
+    int id_question;
+
+}quizz_menu;
+
+typedef struct{
+    char Question[MAX_BUFFER];
+    char answ_1[MAX_BUFFER];
+    char answ_2[MAX_BUFFER];
+    char answ_3[MAX_BUFFER];
+    //char answ_4[MAX_BUFFER];
+    char correct_answ[MAX_BUFFER];
+    int clientSocketFd;
+    int id_question;
+}question;
 
 typedef struct{
     int user_ID;
@@ -52,20 +77,6 @@ typedef struct {
     pthread_mutex_t *login_mutex;
 }login_info;
 
-
-/*
-Queue implementation using a char array.
-Contains a mutex for functions to lock on before modifying the array,
-and condition variables for when it's not empty or full.
-*/
-typedef struct {
-    char *buffer[MAX_BUFFER];
-    int head, tail;
-    int full, empty;
-    pthread_mutex_t *mutex;
-    pthread_cond_t *notFull, *notEmpty;
-} queue;
-
 /*
 Struct containing important data for the server to work.
 Namely the list of client sockets, that list's mutex,
@@ -77,7 +88,6 @@ typedef struct {
     int clientSockets[MAX_BUFFER];
     int numClients;
     pthread_mutex_t *clientListMutex;
-    queue *queue;
 } chatDataVars;
 
 /*
@@ -92,8 +102,9 @@ typedef struct {
     int clientSocketFd;
 } clientHandlerVars;
 
-const char *retrieve_answers();
-const char *retrieve_questions();
+bool retrieve_correct_answers(int socket, char* raspuns, int id);
+bool retrieve_answers(int id);
+bool retrieve_questions(int id);
 bool create_account(char *surname,char *name,char *account,char *password);
 bool verrify_account(char *username,char*password);
 bool initialize_database();
@@ -102,18 +113,15 @@ void startChat(int socketFd);
 void bindSocket(struct sockaddr_in *serverAddr, int socketFd, long port);
 void removeClient(chatDataVars *data, int clientSocketFd);
 
-void *quizzHandler(void *questions);
+void * putQuestion(void *ls);
+void *questionHandler(void *que);
+void *quizz_Handler(void *questions);
 void *menu_handler(void *h_menu);
 void *client_register(void *regInfo);
 void *client_login(void* logInfo);
 void *newClientHandler(void *data);
 void *clientHandler(void *chv);
 void *messageHandler(void *data);
-
-void queueDestroy(queue *q);
-queue* queueInit(void);
-void queuePush(queue *q, char* msg);
-char* queuePop(queue *q);
 
 int main(int argc, char *argv[])
 {
@@ -150,7 +158,6 @@ void startChat(int socketFd)
     chatDataVars data;
     data.numClients = 0;
     data.socketFd = socketFd;
-    data.queue = queueInit();
     data.clientListMutex = (pthread_mutex_t *) malloc(sizeof(pthread_mutex_t));
     pthread_mutex_init(data.clientListMutex, NULL);
 
@@ -165,101 +172,10 @@ void startChat(int socketFd)
     FD_ZERO(&(data.serverReadFds));
     FD_SET(socketFd, &(data.serverReadFds));
 
-    //Start thread to handle messages received
-
-    pthread_t messagesThread;   /* threads ID's */
-
-    if((pthread_create(&messagesThread, NULL, (void *)&messageHandler, (void *)&data)) == 0)
-    {
-        fprintf(stderr, "\n[server] Message handler started\n");
-    }
-
-
-    /* pthread_join || Wait until thread is done its work */
-
     pthread_join(connectionThread, NULL);
-    pthread_join(messagesThread, NULL);
 
-    //queueDestroy(data.queue);
     pthread_mutex_destroy(data.clientListMutex);
     free(data.clientListMutex);
-}
-
-//Initializes queue
-queue* queueInit(void)
-{
-    queue *q = (queue *)malloc(sizeof(queue));
-    if(q == NULL)
-    {
-        perror("Couldn't allocate anymore memory!");
-        exit(EXIT_FAILURE);
-    }
-
-    q->empty = 1;
-    q->full = q->head = q->tail = 0;
-    q->mutex = (pthread_mutex_t *) malloc(sizeof(pthread_mutex_t));
-    if(q->mutex == NULL)
-    {
-        perror("Couldn't allocate anymore memory!");
-        exit(EXIT_FAILURE);
-    }
-    pthread_mutex_init(q->mutex, NULL);
-
-    q->notFull = (pthread_cond_t *) malloc(sizeof(pthread_cond_t));
-    if(q->notFull == NULL)
-    {
-        perror("Couldn't allocate anymore memory!");
-        exit(EXIT_FAILURE);   
-    }
-    pthread_cond_init(q->notFull, NULL);
-
-    q->notEmpty = (pthread_cond_t *) malloc(sizeof(pthread_cond_t));
-    if(q->notEmpty == NULL)
-    {
-        perror("Couldn't allocate anymore memory!");
-        exit(EXIT_FAILURE);
-    }
-    pthread_cond_init(q->notEmpty, NULL);
-
-    return q;
-}
-
-//Frees a queue
-void queueDestroy(queue *q)
-{
-    pthread_mutex_destroy(q->mutex);
-    pthread_cond_destroy(q->notFull);
-    pthread_cond_destroy(q->notEmpty);
-    free(q->mutex);
-    free(q->notFull);
-    free(q->notEmpty);
-    free(q);
-}
-
-//Push to end of queue
-void queuePush(queue *q, char* msg)
-{
-    q->buffer[q->tail] = msg;
-    q->tail++;
-    if(q->tail == MAX_BUFFER)
-        q->tail = 0;
-    if(q->tail == q->head)
-        q->full = 1;
-    q->empty = 0;
-}
-
-//Pop front of queue
-char* queuePop(queue *q)
-{
-    char* msg = q->buffer[q->head];
-    q->head++;
-    if(q->head == MAX_BUFFER)
-        q->head = 0;
-    if(q->head == q->tail)
-        q->empty = 1;
-    q->full = 0;
-
-    return msg;
 }
 
 //Sets up and binds the socket
@@ -350,8 +266,6 @@ void *clientHandler(void *chv)
    /* login_info *logInfo = (login_info *)vars->logInfo;
 
     register_info * regInfo = (register_info *)vars->regInfo;*/
-
-    queue *q = data->queue;
     
     int clientSocketFd = vars->clientSocketFd;
 
@@ -406,54 +320,17 @@ void *clientHandler(void *chv)
 
 
         }
-        if(strcmp(msgBuffer, "/quizz\n") == 0)
-        {
-
-            fprintf(stderr, "  --> Client on socket typed /quizz.\n");
-
-            h_questions questions;
-            questions.clientSocketFd = clientSocketFd;
-
-            //Start thread to handle /quizz received
-
-            pthread_t qThread;   // threads ID's 
-
-            if((pthread_create(&qThread, NULL, (void *)&quizzHandler, (void *)&questions)) == 0)
-        {
-            fprintf(stderr, "[server] Quizz handler started\n");
-        }
-
-
-        // pthread_join || Wait until thread is done its work 
-        pthread_join(qThread, NULL); 
+        
 
             
-        }
-
-
-       /* else 
-        {
-            //Wait for queue to not be full before pushing message
-            while(q->full)
-            {
-                pthread_cond_wait(q->notFull, q->mutex);
-            }
-
-            //Obtain lock, push message to queue, unlock, set condition variable
-            pthread_mutex_lock(q->mutex);
-            fprintf(stderr, "Pushing message to queue: %s\n", msgBuffer);
-            queuePush(q, msgBuffer);
-            pthread_mutex_unlock(q->mutex);
-            pthread_cond_signal(q->notEmpty);
-        }*/
     }
 }
 void *client_register(void *regInfo)
 {
     //clientHandlerVars *vars = (clientHandlerVars *)chv;
     register_info *ri = (register_info *) regInfo;
-    char msgBuffer[MAX_BUFFER];
-    int count = 4;
+    char msgBuffer[MAX_BUFFER] = {0};
+    int count = 5;
     fprintf(stderr, "\n[server] Client transfer to register function.\n");
 
     int socket = ri->clientSocketFd;
@@ -469,9 +346,8 @@ void *client_register(void *regInfo)
         perror("Socket write failed: ");
     if(socket != 0 && write(socket, "4. [password]: \n", MAX_BUFFER - 1) == -1)
         perror("Socket write failed: ");
-
+    memset(msgBuffer,0,MAX_BUFFER - 1);
     while(count>0){
-
         int numBytesRead = read(ri->clientSocketFd, msgBuffer, MAX_BUFFER - 1);
             msgBuffer[numBytesRead] = '\0';
         fprintf(stderr, "%s*\n", msgBuffer);
@@ -479,21 +355,21 @@ void *client_register(void *regInfo)
         if(count == 4) {
 
             strcpy(ri->Name, msgBuffer);
-        //printf("\n%s\n",li->username );
+        fprintf(stderr,"\n%s\n",ri->username );
         }
         if(count == 3) {
             strcpy(ri->Surname, msgBuffer);
-            //printf("\n%s\n",li->password );
+            fprintf(stderr,"\n%s\n",ri->password );
         }
         if(count == 2) {
             strcpy(ri->username, msgBuffer);
-        //printf("\n%s\n",li->username );
+        fprintf(stderr,"\n%s\n",ri->username );
         }
         if(count == 1) {
             strcpy(ri->password, msgBuffer);
-            //printf("\n%s\n",li->password );
+            fprintf(stderr,"\n%s\n",ri->password );
         }
-            count--;
+        count--;
     }
     memset(msgBuffer, 0, MAX_BUFFER);
 
@@ -515,7 +391,7 @@ void *client_login(void *logInfo)
 
     //chatDataVars *data = (chatDataVars *) data;
 
-    char msgBuffer[MAX_BUFFER];
+    char msgBuffer[MAX_BUFFER] = {0};
     int count = 3;
 
     //memset(username, 0, MAX_BUFFER); memset(password, 0, MAX_BUFFER);
@@ -571,6 +447,7 @@ void *client_login(void *logInfo)
             fprintf(stderr, "\n[ important! ] Client is loged id. Socket: %d\n", li->clientSocketFd);
         }
         pthread_join(menuThread, NULL);
+
     }
     else
     {
@@ -583,83 +460,65 @@ void *client_login(void *logInfo)
 void *menu_handler(void *h_menu)
 {
     menu *m = (menu *) h_menu;
-    /*clientHandlerVars *vars = (clientHandlerVars *)chv;
-    chatDataVars * dt = (chatDataVars *)vars->data;
-    menu * m = (menu *)vars->menu;*/
+    char msgBuffer[MAX_BUFFER] = {0};
     char u_ID[10];
     sprintf(u_ID,"%d",m->user_ID);
 
     fprintf(stderr, "\n[server] Client transfer to menu function.\n");
     //fprintf(stderr, "%c\n", u_ID);
     int socket = m->clientSocketFd;
-    if(socket != 0 && write(socket,"\nYou are now in the chat section  ||  Please type one of the commands: \n", MAX_BUFFER -1) == -1)
+    if(socket != 0 && write(socket,"\nYou are now in the menu section  ||  Please type one of the commands: \n", MAX_BUFFER -1) == -1)
         perror("Socket write failed: ");
-    if(socket != 0 && write(socket, "\n=============\n1. /quizz\n2. /exit\n============",MAX_BUFFER -1) == -1)
+    if(socket != 0 && write(socket, "\n=============\n1. /quizz\n============\n",MAX_BUFFER -1) == -1)
         perror("Socket write failed: ");
 
-    if(socket != 0 && write(socket,"\nyour user_ID is: ",MAX_BUFFER - 1) == -1)
+    /*if(socket !=0 && write(socket, "\nPlease press <enter> to see your user ID!\n",MAX_BUFFER -1) == -1)
+        perror("Socket write failed: ");*/
+
+    if(socket !=0 && write(socket, "\nyour user_ID is: ",MAX_BUFFER -1) == -1)
         perror("Socket write failed: ");
-    //strcat(user,to_char(m->user_ID));
+
     if(socket != 0 && write(socket,u_ID,sizeof(char)) == -1)
         perror("Socket write failed: ");
-
-    if(socket != 0 && write(socket,"\n<-----------------------CHAT--------------------->\n\n",MAX_BUFFER - 1) == -1)
-        perror("Socket write failed: ");
+    write(socket,"\n",2);
 
     /* ====================================================================================================== */
-    /*while(1){
-    int numBytesRead = read(m->clientSocketFd, msgBuffer, MAX_BUFFER - 1);
-            msgBuffer[numBytesRead] = '\0';
-    if(strcmp("/stop_chat\n",msgBuffer) == 0){
+    int numBytesRead = read(socket, msgBuffer, MAX_BUFFER - 1);
+        msgBuffer[numBytesRead] = '\0';
+    fprintf(stderr, "%s\n", msgBuffer);
 
-    while(count > 0)
-    {
-        int numBytesRead = read(m->clientSocketFd, msgBuffer, MAX_BUFFER - 1);
-            msgBuffer[numBytesRead] = '\0';
 
-        if(strcmp("/quizz\n",msgBuffer) == 0)
+    if(strcmp(msgBuffer, "/quizz\n") == 0)
         {
-            fprintf(stderr, "  --> Client on socket %d typed /quizz.\n", m->clientSocketFd);
 
-            h_questions questions;
-            questions.clientSocketFd = m->clientSocketFd;
+            fprintf(stderr, "  --> Client on socket typed /quizz.\n");
+
+            quizz_menu qm;
+            qm.clientSocketFd = socket;
 
             //Start thread to handle /quizz received
 
-            pthread_t qThread;   // threads ID's 
+            pthread_t qmThread;   // threads ID's 
 
-            if((pthread_create(&qThread, NULL, (void *)&quizzHandler, (void *)&questions)) == 0)
+            if((pthread_create(&qmThread, NULL, (void *)&quizz_Handler, (void *)&qm)) == 0)
         {
             fprintf(stderr, "[server] Quizz handler started\n");
         }
 
-
         // pthread_join || Wait until thread is done its work 
-        pthread_join(qThread, NULL); 
-
+        pthread_join(qmThread, NULL); 
         }
-        if(strcmp("/exit\n",msgBuffer) == 0) pthread_exit(0);
-        count--;
-    }
-    }*/
-    pthread_exit(0);
 
-    /*while(1)
-    {
-               
-        }
-    }*/
+        pthread_exit(0);
 }
-void *quizzHandler(void *questions)
+void *quizz_Handler(void *qm)
 {
-    h_questions * que = (h_questions *) questions;
+    quizz_menu * quizzM = (quizz_menu *) qm;
+    char sc[10];
 
-    const char* request;
-    const char* answers;
-
-    fprintf(stderr, "\n[server] Client with socket FD %d transfer to quizz function.\n",que->clientSocketFd);
+    fprintf(stderr, "\n[server] Client with socket FD %d transfer to quizz function.\n",quizzM->clientSocketFd);
     
-    int socket = que->clientSocketFd;
+    int socket = quizzM->clientSocketFd;
     if(socket !=0 && write(socket, "\n[info] Your quizz will be generated!",MAX_BUFFER -1) == -1)
         perror("Socket write failed: ");
 
@@ -667,67 +526,108 @@ void *quizzHandler(void *questions)
     while(count > 0)
     {
         count--;
-        if(socket !=0 && write(socket, "\n...",MAX_BUFFER -1) == -1)
+        if((count == 3 ) && (socket !=0 && write(socket, "\n....",MAX_BUFFER -1) == -1))
+            perror("Socket write failed: ");
+        if((count == 2 ) && (socket !=0 && write(socket, "\n...",MAX_BUFFER -1) == -1))
+            perror("Socket write failed: ");
+        if((count == 1 ) && (socket !=0 && write(socket, "\n..",MAX_BUFFER -1) == -1))
+        perror("Socket write failed: ");
+        if((count == 0 ) && (socket !=0 && write(socket, "\n.",MAX_BUFFER -1) == -1))
         perror("Socket write failed: ");
         waitFor(1);
     }
-    write(socket, "\n",MAX_BUFFER -1);
-    //fprintf(stderr, "%s\n", request);
-    //strcpy(question,retrieve_questions());
-    //fprintf(stderr, "%s\n",question );
 
-    //fprintf(stderr, "%s\n", answers);
-    answers = retrieve_answers();
-    request = retrieve_questions();
+    question que;
+    que.clientSocketFd = socket;
+    que.id_question = 1;
+    score = 0;
+    while(que.id_question <= 10)
+    {
+        
+        //Start thread to handle /quizz received
 
-    strcpy(que->Question,request);
-    strcpy(que->answ_1,answers);
+        pthread_t questionThread;   // threads ID's 
 
-    if(socket !=0 && write(socket, que->Question,MAX_BUFFER - 1) == -1)
+        if((pthread_create(&questionThread, NULL, (void *)&questionHandler, (void *)&que)) == 0)
+        {
+            fprintf(stderr, "[server] Quizz handler started\n");
+        }
+        pthread_join(questionThread,NULL);
+        que.id_question++;
+      //waitFor(3);
+    }
+
+    if(socket !=0 && write(socket, "\n[info] That's all! Thank you!\nPress <enter> to see your score!",MAX_BUFFER -1) == -1)
+        perror("Socket write failed: ");
+    if(socket !=0 && write(socket, "\n[info] Your score on this quizz is: ",MAX_BUFFER -1) == -1)
         perror("Socket write failed: ");
 
-    if(socket !=0 && write(socket, "\nPlease press <enter> to see answers!\n",MAX_BUFFER -1) == -1)
+    sprintf(sc,"%d",score);
+    if(socket !=0 && write(socket, sc,sizeof(sc)) == -1)
         perror("Socket write failed: ");
-
-    if(socket !=0 && write(socket, que->answ_1,MAX_BUFFER - 1) == -1)
-        perror("Socket write failed: ");
-    fflush(stdout);
-
-
-
-
-
+    write(socket,"\n\n",2);
     pthread_exit(0);
 }
+void *questionHandler(void *que){
+    question * quest = (question *) que;
 
-//The "consumer" -- waits for the queue to have messages then takes them out and broadcasts to clients
-void *messageHandler(void *data)
-{
-    chatDataVars *chatData = (chatDataVars *)data;
-    queue *q = chatData->queue;
-    int *clientSockets = chatData->clientSockets;
+    fflush(stdout);
+    memset(intrebare,0,MAX_BUFFER - 1);
+    memset(respons,0,MAX_BUFFER - 1);
 
-    while(1)
-    {
-        //Obtain lock and pop message from queue when not empty
-        pthread_mutex_lock(q->mutex);
-        while(q->empty)
+    int socket = quest->clientSocketFd;
+
+    retrieve_questions(quest->id_question);
+    retrieve_answers(quest->id_question);
+
+    last ls;
+    ls.clientSocketFd = socket;
+    ls.id = quest->id_question;
+    strcpy(ls.question,intrebare);
+
+    pthread_t pThread;   // threads ID's 
+
+        if((pthread_create(&pThread, NULL, (void *)&putQuestion, (void *)&ls)) == 0)
         {
-            pthread_cond_wait(q->notEmpty, q->mutex);
+            fprintf(stderr, "[server] Put question applied!\n");
         }
-        char* msg = queuePop(q);
-        pthread_mutex_unlock(q->mutex);
-        pthread_cond_signal(q->notFull);
+        pthread_join(pThread,NULL);
 
-        //Broadcast message to all connected clients
-        fprintf(stderr, "Broadcasting message: %s\n", msg);
-        for(int i = 0; i < chatData->numClients; i++)
-        {
-            int socket = clientSockets[i];
-            if(socket != 0 && write(socket, msg, MAX_BUFFER - 1) == -1)
-                perror("Socket write failed: ");
-        }
-    }
+
+    /*
+
+    write(socket,intrebare,MAX_BUFFER - 1);
+
+    int numBytesRead = read(socket, respons, MAX_BUFFER - 1);
+    respons[numBytesRead] = '\0';
+
+    fflush(stdout);
+
+    if(retrieve_correct_answers(socket,respons, quest->id_question) == 1) fprintf(stderr,"\n\nCorrect!\n\n",13);
+    else fprintf(stderr,"\n\nIncorrect!\n\n",15);*/
+   pthread_exit(0);
+}
+void * putQuestion(void *ls)
+{   
+    last * lst = (last *) ls;
+
+    respons[0] = '\0';
+
+    fprintf(stderr,"This function is accessed!\n");
+
+    fprintf(stderr,"%d\n",lst->id);
+
+    int socket = lst->clientSocketFd;
+    write(socket,lst->question,MAX_BUFFER - 1);
+
+    int numBytesRead = read(socket, respons, MAX_BUFFER - 1);
+    respons[numBytesRead] = '\0';
+
+    if(retrieve_correct_answers(socket,respons, lst->id) == 1) { write(socket,correct,MIN_BUFFER - 1); score++; }
+    else write(socket,incorrect,MIN_BUFFER - 1);
+
+    pthread_exit(0);
+
 }
 
 bool initialize_database()
@@ -794,9 +694,10 @@ bool create_account(char *surname,char *name,char *account,char *password)
     return 0;
 }
 
-const char *retrieve_questions() 
+bool retrieve_questions(int id) 
 {
-    static char *question[1024];
+    intrebare[0] = '\0';
+    char question[MAX_BUFFER] = {0};
     sqlite3 *db;
     char *err_msg = 0;
     sqlite3_stmt *res;
@@ -810,7 +711,6 @@ const char *retrieve_questions()
         
         return 1;
     }
-    else fprintf(stderr, "Database successfully opened!\n\n");
     
     char *sql = "SELECT id, que FROM Questions WHERE Id = ?";
         
@@ -818,7 +718,7 @@ const char *retrieve_questions()
     
     if (rc == SQLITE_OK) {
         
-        sqlite3_bind_int(res, 1, 1);
+        sqlite3_bind_int(res, 1, id);
     } else {
         
         fprintf(stderr, "Failed to execute statement: %s\n", sqlite3_errmsg(db));
@@ -830,21 +730,25 @@ const char *retrieve_questions()
         
        // printf("%s: ", sqlite3_column_text(res, 0));
         //fprintf(stderr, "%s\n", sqlite3_column_text(res, 1));
-       strcat(question,sqlite3_column_text(res, 0));
+       /*strcat(question,sqlite3_column_text(res, 0));
        strcat(question,": ");
        strcat(question,sqlite3_column_text(res, 1));
-       fprintf(stderr, "%s\n", question);
+       fprintf(stderr, "%s\n", question);*/
+        strcat(question,"\n");
+        strcat(question,sqlite3_column_text(res, 1));
+        strcat(question,"\n");
+        strcpy(intrebare,question);
         
     } 
-    //fprintf(stderr, "%s\n", question);
+    fprintf(stderr, "%s\n", intrebare);
     sqlite3_finalize(res);
     sqlite3_close(db);
     
-    return question;
+    //return question;
 }
-const char *retrieve_answers() 
+bool retrieve_answers(int id) 
 {
-    static char *question[1024];
+    char answer[MAX_BUFFER] = {0};
     sqlite3 *db;
     char *err_msg = 0;
     sqlite3_stmt *res;
@@ -858,7 +762,6 @@ const char *retrieve_answers()
         
         return 1;
     }
-    else fprintf(stderr, "Database successfully opened!\n\n");
     
     char *sql = "SELECT ID, ans1, ans2, ans3 FROM Questions WHERE Id = ?";
         
@@ -866,7 +769,7 @@ const char *retrieve_answers()
     
     if (rc == SQLITE_OK) {
         
-        sqlite3_bind_int(res, 1, 1);
+        sqlite3_bind_int(res, 1, id);
     } else {
         
         fprintf(stderr, "Failed to execute statement: %s\n", sqlite3_errmsg(db));
@@ -878,18 +781,67 @@ const char *retrieve_answers()
         
        // printf("%s: ", sqlite3_column_text(res, 0));
         //fprintf(stderr, "%s\n", sqlite3_column_text(res, 1));
-       strcat(question,"\n1. ");
-       strcat(question,sqlite3_column_text(res, 1));
-       strcat(question,"  2. ");
-       strcat(question,sqlite3_column_text(res, 2));
-       strcat(question,"  3. ");
-       strcat(question,sqlite3_column_text(res, 3));
-       fprintf(stderr, "%s\n", question);
+       strcat(answer,"1. ");
+       strcat(answer,sqlite3_column_text(res, 1));
+       strcat(answer,"  2. ");
+       strcat(answer,sqlite3_column_text(res, 2));
+       strcat(answer,"  3. ");
+       strcat(answer,sqlite3_column_text(res, 3));
+       strcat(answer,"\n");
+       fprintf(stderr, "%s\n", answer);
         
     } 
     //fprintf(stderr, "%s\n", question);
+    strcat(intrebare, answer);
     sqlite3_finalize(res);
     sqlite3_close(db);
     
-    return question;
+}
+bool retrieve_correct_answers(int socket, char * raspuns, int id){
+
+    raspuns[strlen(raspuns)-1] = '\0';
+    char answer[MAX_BUFFER] = {0};
+    sqlite3 *db;
+    char *err_msg = 0;
+    sqlite3_stmt *res;
+    
+    int rc = sqlite3_open("questions.db3", &db);
+    
+    if (rc != SQLITE_OK) {
+        
+        fprintf(stderr, "Cannot open database: %s\n", sqlite3_errmsg(db));
+        sqlite3_close(db);
+        
+        return 1;
+    }
+    
+    char *sql = "SELECT ID, correct_ans FROM Questions WHERE Id = ?";
+        
+    rc = sqlite3_prepare_v2(db, sql, -1, &res, 0);
+    
+    if (rc == SQLITE_OK) {
+        
+        sqlite3_bind_int(res, 1, id);
+    } else {
+        
+        fprintf(stderr, "Failed to execute statement: %s\n", sqlite3_errmsg(db));
+    }
+    
+    int step = sqlite3_step(res);
+    
+    if (step == SQLITE_ROW) {
+        
+       // printf("%s: ", sqlite3_column_text(res, 0));
+        //fprintf(stderr, "%s\n", sqlite3_column_text(res, 1));
+       strcat(answer,sqlite3_column_text(res, 1));
+       fprintf(stderr, "*%s*\n", raspuns);
+       fprintf(stderr, "*%s*\n", answer);
+        
+    } 
+    //fprintf(stderr, "%s\n", question);
+    //strcat(intrebare, answer);
+    sqlite3_finalize(res);
+    sqlite3_close(db);
+    if(strcmp(answer,raspuns) == 0) return true;
+    else return false;
 }
