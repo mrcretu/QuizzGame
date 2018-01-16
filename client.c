@@ -1,4 +1,5 @@
-//Eugene Li - Multithreaded chat client
+#include "functions.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -16,12 +17,13 @@
 #define MAX_BUFFER 1024
 
 void chatloop(char *name, int socketFd);
-void buildMessage(char *result, char *name, char *msg);
+//void buildMessage(char *result, char *name, char *msg);
 void setupAndConnect(struct sockaddr_in *serverAddr, struct hostent *host, int socketFd, long port);
 void setNonBlock(int fd);
 void exit_interruptHandler(int sig);
 void login_option();
 void register_option();
+void quizz_option();
 
 static int socketFd;
 
@@ -100,12 +102,15 @@ void chatloop(char *name, int socketFd)
                         if(strcmp(chatBuffer, "/login\n") == 0)
                             login_option();
 
-                         if(strcmp(chatBuffer, "/register\n") == 0)
+                        if(strcmp(chatBuffer, "/register\n") == 0)
                             register_option(); 
+
+                        if(strcmp(chatBuffer, "/quizz\n") == 0)
+                            quizz_option(); 
                         else
                         {
-                            buildMessage(chatMsg, name, chatBuffer);
-                            if(write(socketFd, chatMsg, MAX_BUFFER - 1) == -1) perror("write failed: ");
+                            //buildMessage(chatBuffer,name,msgBuffer);
+                            if(write(socketFd, chatBuffer, MAX_BUFFER - 1) == -1) perror("write failed: ");
                             //printf("%s", chatMsg);
                             memset(&chatBuffer, 0, sizeof(chatBuffer));
                         }
@@ -116,14 +121,6 @@ void chatloop(char *name, int socketFd)
     }
 }
 
-//Concatenates the name with the message and puts it into result
-void buildMessage(char *result, char *name, char *msg)
-{
-    memset(result, 0, MAX_BUFFER);
-    //strcpy(result, name);
-    //strcat(result, ": ");
-    strcat(result, msg);
-}
 
 //Sets up the socket and connects
 void setupAndConnect(struct sockaddr_in *serverAddr, struct hostent *host, int socketFd, long port)
@@ -169,5 +166,10 @@ void login_option()
 void register_option() 
 {
     if(write(socketFd, "/register\n", MAX_BUFFER - 1) == -1)
+        perror("write failed: ");
+}
+void quizz_option()
+{
+    if(write(socketFd, "/quizz\n", MAX_BUFFER - 1) == -1)
         perror("write failed: ");
 }
